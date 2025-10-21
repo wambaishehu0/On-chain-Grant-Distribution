@@ -13,10 +13,14 @@
 (define-constant ERR_MILESTONE_NOT_APPROVED (err u112))
 (define-constant ERR_ALL_MILESTONES_COMPLETED (err u113))
 (define-constant ERR_INVALID_MILESTONE_COUNT (err u114))
+(define-constant ERR_VETO_WINDOW_EXPIRED (err u115))
+(define-constant ERR_PROPOSAL_NOT_EXECUTED (err u116))
+(define-constant ERR_PROPOSAL_ALREADY_VETOED (err u117))
 
 (define-constant CONTRACT_OWNER tx-sender)
 (define-constant VOTING_PERIOD u144)
 (define-constant MIN_APPROVAL_THRESHOLD u51)
+(define-constant VETO_WINDOW u72)
 
 (define-data-var proposal-counter uint u0)
 (define-data-var treasury-balance uint u0)
@@ -65,9 +69,18 @@
   }
 )
 
-(define-map proposal-milestones 
-  uint 
+(define-map proposal-milestones
+  uint
   (list 10 uint)
+)
+
+(define-map veto-windows
+  uint
+  {
+    executed-at: uint,
+    vetoed: bool,
+    veto-reason: (optional (string-utf8 200))
+  }
 )
 
 (define-public (add-dao-member (member principal) (voting-power uint))
@@ -201,6 +214,11 @@
             (try! (as-contract (stx-transfer? (get amount proposal) tx-sender (get recipient proposal))))
             (var-set treasury-balance (- (var-get treasury-balance) (get amount proposal)))
             (map-set proposals proposal-id (merge proposal { executed: true, approved: true }))
+            (map-set veto-windows proposal-id {
+              executed-at: current-stacks-block-height,
+              vetoed: false,
+              veto-reason: none
+            })
             (ok { executed: true, approved: true })
           )
           (begin
@@ -506,11 +524,41 @@
     (begin
       (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
       (asserts! (not (get executed proposal)) ERR_PROPOSAL_ALREADY_EXECUTED)
-      
+
       (map-set proposals proposal-id
         (merge proposal { executed: true, approved: false })
       )
-      
+
+      (ok true)
+    )
+  )
+)
+
+(define-public (veto-proposal (proposal-id uint) (reason (string-utf8 200)))
+  (let
+    (
+      (proposal (unwrap! (map-get? proposals proposal-id) ERR_PROPOSAL_NOT_FOUND))
+      (veto-window (unwrap! (map-get? veto-windows proposal-id) ERR_PROPOSAL_NOT_EXECUTED))
+      (current-block stacks-block-height)
+      (blocks-since-execution (- current-block (get executed-at veto-window)))
+    )
+    (begin
+      (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+      (asserts! (get approved proposal) ERR_PROPOSAL_NOT_APPROVED)
+      (asserts! (not (get vetoed veto-window)) ERR_PROPOSAL_ALREADY_VETOED)
+      (asserts! (< blocks-since-execution VETO_WINDOW) ERR_VETO_WINDOW_EXPIRED)
+
+      (map-set veto-windows proposal-id
+        (merge veto-window {
+          vetoed: true,
+          veto-reason: (some reason)
+        })
+      )
+
+      (map-set proposals proposal-id
+        (merge proposal { approved: false })
+      )
+
       (ok true)
     )
   )
@@ -651,7 +699,7 @@
 )
 
 (define-read-only (get-milestone-analytics (proposal-id uint))
-  (let 
+  (let
     (
       (proposal (unwrap! (map-get? proposals proposal-id) (err u404)))
       (milestone-ids (default-to (list) (map-get? proposal-milestones proposal-id)))
@@ -663,7 +711,7 @@
       distributed-amount: completed-amount,
       remaining-amount: (- (get amount proposal) completed-amount),
       completion-rate: (if (> (get total-milestones proposal) u0)
-                        (/ (* (get completed-milestones proposal) u100) 
+                        (/ (* (get completed-milestones proposal) u100)
                            (get total-milestones proposal))
                         u0),
       milestone-ids: milestone-ids
@@ -671,7 +719,25 @@
   )
 )
 
+(define-read-only (get-veto-status (proposal-id uint))
+  (map-get? veto-windows proposal-id)
+)
+
+(define-read-only (can-veto-proposal (proposal-id uint))
+  (match (map-get? veto-windows proposal-id)
+    veto-window
+    (let ((blocks-since-execution (- stacks-block-height (get executed-at veto-window))))
+      (and
+        (not (get vetoed veto-window))
+        (< blocks-since-execution VETO_WINDOW)
+      )
+    )
+    false
+  )
+)
+
 (begin
   (map-set dao-members CONTRACT_OWNER true)
   (map-set member-voting-power CONTRACT_OWNER u100)
 )
+ 
