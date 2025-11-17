@@ -17,10 +17,24 @@
 (define-constant ERR_PROPOSAL_NOT_EXECUTED (err u116))
 (define-constant ERR_PROPOSAL_ALREADY_VETOED (err u117))
 
+(define-constant ERR_FT_TRANSFER_FAILED (err u118))
+(define-constant ERR_FT_INSUFFICIENT_FUNDS (err u119))
+
 (define-constant CONTRACT_OWNER tx-sender)
 (define-constant VOTING_PERIOD u144)
 (define-constant MIN_APPROVAL_THRESHOLD u51)
 (define-constant VETO_WINDOW u72)
+
+(define-trait sip010
+  (
+    (transfer (uint principal principal (optional (buff 34))) (response bool uint))
+    (balance-of (principal) (response uint uint))
+    (total-supply () (response uint uint))
+    (decimals () (response uint uint))
+    (symbol () (response (string-ascii 32) uint))
+    (name () (response (string-ascii 32) uint))
+  )
+)
 
 (define-data-var proposal-counter uint u0)
 (define-data-var treasury-balance uint u0)
@@ -82,6 +96,8 @@
     veto-reason: (optional (string-utf8 200))
   }
 )
+
+(define-map ft-treasury principal uint)
 
 (define-public (add-dao-member (member principal) (voting-power uint))
   (begin
@@ -237,6 +253,34 @@
     (let ((balance (var-get treasury-balance)))
       (var-set treasury-balance u0)
       (as-contract (stx-transfer? balance tx-sender CONTRACT_OWNER))
+    )
+  )
+)
+
+(define-read-only (get-ft-balance (token <sip010>))
+  (default-to u0 (map-get? ft-treasury (contract-of token)))
+)
+
+(define-public (deposit-ft (token <sip010>) (amount uint))
+  (begin
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (unwrap! (contract-call? token transfer amount tx-sender (as-contract tx-sender) none) ERR_FT_TRANSFER_FAILED)
+    (let ((current (default-to u0 (map-get? ft-treasury (contract-of token)))))
+      (map-set ft-treasury (contract-of token) (+ current amount))
+    )
+    (ok amount)
+  )
+)
+
+(define-public (withdraw-ft (token <sip010>) (amount uint) (recipient principal))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (let ((current (default-to u0 (map-get? ft-treasury (contract-of token)))))
+      (asserts! (>= current amount) ERR_FT_INSUFFICIENT_FUNDS)
+      (unwrap! (contract-call? token transfer amount (as-contract tx-sender) recipient none) ERR_FT_TRANSFER_FAILED)
+      (map-set ft-treasury (contract-of token) (- current amount))
+      (ok amount)
     )
   )
 )
