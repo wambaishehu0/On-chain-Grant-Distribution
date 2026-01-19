@@ -780,6 +780,89 @@
   )
 )
 
+;; --------------------------------------------------------------------------
+;; Community Grant Matching Feature
+;; --------------------------------------------------------------------------
+
+(define-constant ERR_CONTRIBUTION_REFUND_FAILED (err u120))
+(define-constant ERR_CONTRIBUTION_CLAIM_FAILED (err u121))
+(define-constant ERR_PROPOSAL_STILL_ACTIVE (err u122))
+(define-constant ERR_NO_CONTRIBUTIONS_FOUND (err u123))
+
+(define-map proposal-contributions uint uint)
+(define-map user-contributions { proposal-id: uint, contributor: principal } uint)
+
+(define-public (contribute-to-proposal (proposal-id uint) (amount uint))
+  (let 
+    (
+      (proposal (unwrap! (map-get? proposals proposal-id) ERR_PROPOSAL_NOT_FOUND))
+      (current-total (default-to u0 (map-get? proposal-contributions proposal-id)))
+      (current-user-contribution (default-to u0 (map-get? user-contributions { proposal-id: proposal-id, contributor: tx-sender })))
+    )
+    (begin
+      (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+      (asserts! (<= stacks-block-height (get voting-deadline proposal)) ERR_VOTING_PERIOD_ENDED)
+      (asserts! (not (get executed proposal)) ERR_PROPOSAL_ALREADY_EXECUTED)
+      
+      (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+      
+      (map-set proposal-contributions proposal-id (+ current-total amount))
+      (map-set user-contributions { proposal-id: proposal-id, contributor: tx-sender } (+ current-user-contribution amount))
+      
+      (ok true)
+    )
+  )
+)
+
+(define-public (claim-matched-funds (proposal-id uint))
+  (let 
+    (
+      (proposal (unwrap! (map-get? proposals proposal-id) ERR_PROPOSAL_NOT_FOUND))
+      (total-contribution (default-to u0 (map-get? proposal-contributions proposal-id)))
+    )
+    (begin
+      (asserts! (is-eq tx-sender (get recipient proposal)) ERR_NOT_AUTHORIZED)
+      (asserts! (get executed proposal) ERR_PROPOSAL_NOT_EXECUTED)
+      (asserts! (get approved proposal) ERR_PROPOSAL_NOT_APPROVED)
+      (asserts! (> total-contribution u0) ERR_NO_CONTRIBUTIONS_FOUND)
+      
+      (try! (as-contract (stx-transfer? total-contribution tx-sender (get recipient proposal))))
+      
+      (map-set proposal-contributions proposal-id u0)
+      (ok total-contribution)
+    )
+  )
+)
+
+(define-public (refund-contribution (proposal-id uint))
+  (let 
+    (
+      (proposal (unwrap! (map-get? proposals proposal-id) ERR_PROPOSAL_NOT_FOUND))
+      (user-contribution (default-to u0 (map-get? user-contributions { proposal-id: proposal-id, contributor: tx-sender })))
+      (total-contribution (default-to u0 (map-get? proposal-contributions proposal-id)))
+    )
+    (begin
+      (asserts! (and (get executed proposal) (not (get approved proposal))) ERR_PROPOSAL_STILL_ACTIVE)
+      (asserts! (> user-contribution u0) ERR_NO_CONTRIBUTIONS_FOUND)
+      
+      (try! (as-contract (stx-transfer? user-contribution tx-sender tx-sender)))
+      
+      (map-delete user-contributions { proposal-id: proposal-id, contributor: tx-sender })
+      (map-set proposal-contributions proposal-id (- total-contribution user-contribution))
+      
+      (ok user-contribution)
+    )
+  )
+)
+
+(define-read-only (get-proposal-contribution-total (proposal-id uint))
+  (default-to u0 (map-get? proposal-contributions proposal-id))
+)
+
+(define-read-only (get-user-contribution (proposal-id uint) (user principal))
+  (default-to u0 (map-get? user-contributions { proposal-id: proposal-id, contributor: user }))
+)
+
 (begin
   (map-set dao-members CONTRACT_OWNER true)
   (map-set member-voting-power CONTRACT_OWNER u100)
