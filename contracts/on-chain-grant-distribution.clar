@@ -19,6 +19,7 @@
 
 (define-constant ERR_FT_TRANSFER_FAILED (err u118))
 (define-constant ERR_FT_INSUFFICIENT_FUNDS (err u119))
+(define-constant ERR_INSUFFICIENT_FEE (err u124))
 
 (define-constant CONTRACT_OWNER tx-sender)
 (define-constant VOTING_PERIOD u144)
@@ -39,6 +40,7 @@
 (define-data-var proposal-counter uint u0)
 (define-data-var treasury-balance uint u0)
 (define-data-var milestone-counter uint u0)
+(define-data-var proposal-fee uint u1000000)
 
 (define-map proposals 
   uint 
@@ -145,6 +147,10 @@
       (asserts! (default-to false (map-get? dao-members tx-sender)) ERR_NOT_AUTHORIZED)
       (asserts! (> amount u0) ERR_INVALID_AMOUNT)
       (asserts! (not (is-eq recipient (as-contract tx-sender))) ERR_INVALID_RECIPIENT)
+      
+      (try! (stx-transfer? (var-get proposal-fee) tx-sender (as-contract tx-sender)))
+      (var-set treasury-balance (+ (var-get treasury-balance) (var-get proposal-fee)))
+
       (asserts! (<= amount (var-get treasury-balance)) ERR_INSUFFICIENT_FUNDS)
       
       (map-set proposals proposal-id
@@ -282,6 +288,14 @@
       (map-set ft-treasury (contract-of token) (- current amount))
       (ok amount)
     )
+  )
+)
+
+(define-public (set-proposal-fee (new-fee uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (var-set proposal-fee new-fee)
+    (ok true)
   )
 )
 
@@ -440,6 +454,10 @@
       (asserts! (default-to false (map-get? dao-members tx-sender)) ERR_NOT_AUTHORIZED)
       (asserts! (> total-amount u0) ERR_INVALID_AMOUNT)
       (asserts! (not (is-eq recipient (as-contract tx-sender))) ERR_INVALID_RECIPIENT)
+      
+      (try! (stx-transfer? (var-get proposal-fee) tx-sender (as-contract tx-sender)))
+      (var-set treasury-balance (+ (var-get treasury-balance) (var-get proposal-fee)))
+
       (asserts! (<= total-amount (var-get treasury-balance)) ERR_INSUFFICIENT_FUNDS)
       (asserts! (and (> milestone-count u0) (<= milestone-count u10)) ERR_INVALID_MILESTONE_COUNT)
       
